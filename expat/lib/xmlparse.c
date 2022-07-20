@@ -239,7 +239,11 @@ typedef struct {
 #define INIT_DATA_BUF_SIZE 1024
 #define INIT_ATTS_SIZE 16
 #define INIT_ATTS_VERSION 0xFFFFFFFF
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+#define INIT_BLOCK_SIZE 1
+#else
 #define INIT_BLOCK_SIZE 1024
+#endif // FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
 #define INIT_BUFFER_SIZE 1024
 
 #define EXPAND_SPARE 24
@@ -7156,6 +7160,18 @@ poolInit(STRING_POOL *pool, const XML_Memory_Handling_Suite *ms) {
   pool->mem = ms;
 }
 
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+// When fuzzing, we want poolClear to actually free the allocations so that we
+// will ensure that any accesses to stale pointers can be caught.
+static void FASTCALL
+poolClear(STRING_POOL *pool) {
+  poolDestroy(pool);
+  pool->blocks = NULL;
+  pool->start = NULL;
+  pool->ptr = NULL;
+  pool->end = NULL;
+}
+#else
 static void FASTCALL
 poolClear(STRING_POOL *pool) {
   if (! pool->freeBlocks)
@@ -7174,6 +7190,7 @@ poolClear(STRING_POOL *pool) {
   pool->ptr = NULL;
   pool->end = NULL;
 }
+#endif // FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
 
 static void FASTCALL
 poolDestroy(STRING_POOL *pool) {
@@ -7293,6 +7310,17 @@ poolBytesToAllocateFor(int blockSize) {
   }
 }
 
+static int poolGrowBlockSize(int blockSize) {
+  /* Use unsigned to avoid _signed_ overflow undefined behavior */
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+  // In fuzzing builds, expand the block by 1 each realloc call to force a
+  // realloc call on each append, catching pool usage errors.
+  return (int)((unsigned)blockSize + 1U);
+#else
+  return (int)((unsigned)blockSize * 2U);
+#endif
+}
+
 static XML_Bool FASTCALL
 poolGrow(STRING_POOL *pool) {
   if (pool->freeBlocks) {
@@ -7320,7 +7348,7 @@ poolGrow(STRING_POOL *pool) {
   }
   if (pool->blocks && pool->start == pool->blocks->s) {
     BLOCK *temp;
-    int blockSize = (int)((unsigned)(pool->end - pool->start) * 2U);
+    int blockSize = poolGrowBlockSize(pool->end - pool->start);
     size_t bytesToAllocate;
 
     /* NOTE: Needs to be calculated prior to calling `realloc`
@@ -7371,11 +7399,11 @@ poolGrow(STRING_POOL *pool) {
     if (blockSize < INIT_BLOCK_SIZE)
       blockSize = INIT_BLOCK_SIZE;
     else {
-      /* Detect overflow, avoiding _signed_ overflow undefined behavior */
-      if ((int)((unsigned)blockSize * 2U) < 0) {
+      /* Detect overflow */
+      if (poolGrowBlockSize(blockSize) < 0) {
         return XML_FALSE;
       }
-      blockSize *= 2;
+      blockSize = poolGrowBlockSize(blockSize);
     }
 
     bytesToAllocate = poolBytesToAllocateFor(blockSize);

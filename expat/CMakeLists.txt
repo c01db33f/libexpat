@@ -644,6 +644,7 @@ if(EXPAT_BUILD_FUZZERS)
     set(fuzz_targets xml_parse_fuzzer xml_parsebuffer_fuzzer)
 
     add_library(fuzzpat STATIC ${_EXPAT_C_SOURCES})
+    target_compile_options(fuzzpat PRIVATE -DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION)
     if(NOT EXPAT_OSSFUZZ_BUILD)
         target_compile_options(fuzzpat PRIVATE -fsanitize=fuzzer-no-link)
     endif()
